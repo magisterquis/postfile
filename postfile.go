@@ -64,17 +64,6 @@ Options:
 	}
 	flag.Parse()
 
-	/* Be in the output directory */
-	if err := os.Chdir(*dir); nil != err {
-		log.Fatalf("Unable to cd to %v: %v", *dir, err)
-	}
-
-	/* Add the one handler */
-	http.Handle("/", handlers.CombinedLoggingHandler(
-		os.Stdout,
-		http.HandlerFunc(handle),
-	))
-
 	/* Load certificates */
 	pair, err := tls.LoadX509KeyPair(*cert, *key)
 	if nil != err {
@@ -86,6 +75,17 @@ Options:
 		)
 	}
 	log.Printf("Loaded keypair from %v and %v", *cert, *key)
+
+	/* Be in the output directory */
+	if err := os.Chdir(*dir); nil != err {
+		log.Fatalf("Unable to cd to %v: %v", *dir, err)
+	}
+
+	/* Add the one handler */
+	http.Handle("/", handlers.CombinedLoggingHandler(
+		os.Stdout,
+		http.HandlerFunc(handle),
+	))
 
 	/* Listen with TLS */
 	l, err := tls.Listen("tcp", *laddr, &tls.Config{
