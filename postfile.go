@@ -14,12 +14,12 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
-
-	"github.com/gorilla/handlers"
 )
 
 /* LOCK locks the output directory, to avoid file clobbering */
@@ -27,6 +27,11 @@ var LOCK = &sync.Mutex{}
 
 func main() {
 	var (
+		plaintext = flag.Bool(
+			"http",
+			false,
+			"Serve plaintext HTTP",
+		)
 		laddr = flag.String(
 			"l",
 			"0.0.0.0:4433",
@@ -45,7 +50,7 @@ func main() {
 		dir = flag.String(
 			"dir",
 			"posts",
-			"POST `directory`",
+			"POSTed files `directory`",
 		)
 	)
 	flag.Usage = func() {
@@ -53,8 +58,8 @@ func main() {
 			os.Stderr,
 			`Usage: %v [options]
 
-Accepts POST requests via HTTPS, and logs the contents to a file named after
-the IP address.
+Accepts POST requests via HTTPS (or plaintext HTTP with -http), and logs the
+contents to a file named after the IP address and path.
 
 Options:
 `,
@@ -64,61 +69,103 @@ Options:
 	}
 	flag.Parse()
 
-	/* Load certificates */
-	pair, err := tls.LoadX509KeyPair(*cert, *key)
-	if nil != err {
-		log.Fatalf(
-			"Unable to load keypair from %v and %v: %v",
-			*cert,
-			*key,
-			err,
-		)
-	}
-	log.Printf("Loaded keypair from %v and %v", *cert, *key)
-
 	/* Be in the output directory */
+	if err := os.MkdirAll(*dir, 0700); nil != err {
+		log.Fatalf("Unable to make directory %q: %v", *dir, err)
+	}
 	if err := os.Chdir(*dir); nil != err {
 		log.Fatalf("Unable to cd to %v: %v", *dir, err)
 	}
 
 	/* Add the one handler */
-	http.Handle("/", handlers.CombinedLoggingHandler(
-		os.Stdout,
-		http.HandlerFunc(handle),
-	))
+	http.HandleFunc("/", handle)
 
-	/* Listen with TLS */
-	l, err := tls.Listen("tcp", *laddr, &tls.Config{
-		Certificates: []tls.Certificate{pair},
-	})
-	if nil != err {
-		log.Fatalf("Unable to listen with TLS on %v: %v", *laddr, err)
+	/* Come up with a TLS or plaintext listener */
+	var (
+		l   net.Listener
+		err error
+	)
+	if *plaintext {
+		l, err = net.Listen("tcp", *laddr)
+	} else {
+		/* Load certificates */
+		pair, err := tls.LoadX509KeyPair(*cert, *key)
+		if nil != err {
+			log.Fatalf(
+				"Unable to load keypair from %v and %v: %v",
+				*cert,
+				*key,
+				err,
+			)
+		}
+		log.Printf("Loaded keypair from %v and %v", *cert, *key)
+		/* Listen with TLS */
+		l, err = tls.Listen("tcp", *laddr, &tls.Config{
+			Certificates: []tls.Certificate{pair},
+		})
 	}
-	log.Printf("Listening for HTTPS connections on %v", l.Addr())
+	if nil != err {
+		log.Fatalf("Unable to listen on %v: %v", *laddr, err)
+	}
+	log.Printf("Listening for requests on %v", l.Addr())
 
 	/* Handle HTTPS calls */
-	log.Fatalf("Unable to serve HTTPS: %v", http.Serve(l, nil))
+	log.Fatalf("Error: %v", http.Serve(l, nil))
 }
 
 /* handle writes POST data to files */
 func handle(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+
+	/* Request string */
+	rs := fmt.Sprintf(
+		"[%v %v %v %v Host:%q UA:%q]",
+		r.RemoteAddr,
+		r.Method,
+		r.URL,
+		r.Proto,
+		r.Host,
+		r.Header.Get("User-Agent"),
+	)
+
 	/* Redirect non-POST requests to the requestor */
-	if strings.ToLower("POST") != r.Method {
-		http.Redirect(w, r, "https://127.0.0.1", http.StatusFound)
+	if http.MethodPost != r.Method {
+		log.Printf("%v Invalid method", rs)
+		http.Error(w, "Invalid method", http.StatusMethodNotAllowed)
 		return
 	}
+
 	/* Open the file for writing */
-	f := openFile(r)
+	f, err := openFile(r)
+	if nil != err {
+		log.Printf("%v Unable to open file: %v", rs, err)
+		http.Error(w, "open", http.StatusInternalServerError)
+		return
+	}
 	defer f.Close()
-	/* Write connection information to it */
-	fmt.Fprintf(f, "POST %v %v\n", r.URL, r.Proto)
-	r.Header.Write(f)
-	fmt.Fprintf(f, "\n")
-	io.Copy(f, r.Body)
+
+	/* Copy data to file */
+	n, err := io.Copy(f, r.Body)
+	if nil != err {
+		log.Printf(
+			"%v Error after writing %v bytes to %q: %v",
+			rs,
+			n,
+			f.Name(),
+			err,
+		)
+		http.Error(w, "write", http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("%v Wrote %v bytes to %q: %v", rs, n, f.Name(), err)
+
+	/* Return the number of bytes written */
+	fmt.Fprintf(w, "%v", n)
 }
 
 /* openFile opens a file for this request */
-func openFile(r *http.Request) *os.File {
+func openFile(r *http.Request) (*os.File, error) {
 	LOCK.Lock()
 	defer LOCK.Unlock()
 	var (
@@ -126,25 +173,36 @@ func openFile(r *http.Request) *os.File {
 		name string
 		num  int
 	)
+
 	/* Keep trying until we find a name */
 	for name = makeName(r, num); nil == err ||
-		os.ErrNotExist != err; name = makeName(r, num) {
+		!os.IsNotExist(err); name = makeName(r, num) {
 		_, err = os.Stat(name)
 		num++
 	}
+
 	/* Open the file */
-	f, err := os.OpenFile(
+	return os.OpenFile(
 		name,
 		os.O_WRONLY|os.O_APPEND|os.O_CREATE|os.O_EXCL,
 		0600,
 	)
-	if nil != err {
-		log.Fatalf("Unable to open %v: %v", name, err)
-	}
-	return f
 }
 
 /* makeName makes a name from the given request and number */
 func makeName(r *http.Request, num int) string {
-	return fmt.Sprintf("%v_%06v", r.RemoteAddr, num)
+	return fmt.Sprintf(
+		"%s_%s_%06v",
+		r.RemoteAddr,
+		strings.Replace(
+			strings.TrimPrefix(
+				filepath.Clean(r.URL.Path),
+				"/",
+			),
+			"/",
+			"_",
+			-1,
+		),
+		num,
+	)
 }
