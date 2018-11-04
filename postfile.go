@@ -16,13 +16,14 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/fcgi"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 )
 
-/* LOCK locks the output directory, to avoid file clobbering */
+// LOCK locks the output directory, to avoid file clobbering
 var LOCK = &sync.Mutex{}
 
 func main() {
@@ -51,6 +52,12 @@ func main() {
 			"dir",
 			"posts",
 			"POSTed files `directory`",
+		)
+		serveFCGI = flag.Bool(
+			"fcgi",
+			false,
+			"Serve FastCGI and take the listen address as a "+
+				"path to a unix socket",
 		)
 	)
 	flag.Usage = func() {
@@ -87,8 +94,15 @@ Options:
 	)
 	if *plaintext {
 		l, err = net.Listen("tcp", *laddr)
+	} else if *serveFCGI {
+		l, err := net.Listen("unix", *laddr)
+		if nil != err {
+			log.Fatalf("Unable to listen: %v", err)
+		}
+		if ul, ok := l.(*net.UnixListener); ok {
+			ul.SetUnlinkOnClose(true)
+		}
 	} else {
-		/* Load certificates */
 		pair, err := tls.LoadX509KeyPair(*cert, *key)
 		if nil != err {
 			log.Fatalf(
@@ -108,6 +122,11 @@ Options:
 		log.Fatalf("Unable to listen on %v: %v", *laddr, err)
 	}
 	log.Printf("Listening for requests on %v", l.Addr())
+
+	/* Handle FastCGI */
+	if *serveFCGI {
+		log.Fatalf("Error: %v", fcgi.Serve(l, nil))
+	}
 
 	/* Handle HTTPS calls */
 	log.Fatalf("Error: %v", http.Serve(l, nil))
