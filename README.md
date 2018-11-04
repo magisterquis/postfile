@@ -8,5 +8,6 @@ Current Features
 2. Saves files to a directory
 3. Sanitizes paths
 4. Doesn't overwrite files
+5. FastCGI support
 
 Work in progress, try running with `-h`.
