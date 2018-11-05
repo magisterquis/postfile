@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/http/fcgi"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -95,13 +96,29 @@ Options:
 	if *plaintext {
 		l, err = net.Listen("tcp", *laddr)
 	} else if *serveFCGI {
+		/* Listen on a unix socket for fcgi */
 		l, err = net.Listen("unix", *laddr)
 		if nil != err {
 			log.Fatalf("Unable to listen: %v", err)
 		}
+		/* Make sure the socket is closed */
 		if ul, ok := l.(*net.UnixListener); ok {
 			ul.SetUnlinkOnClose(true)
 		}
+		/* Remove the socket when the progrm terminates, maybe */
+		ch := make(chan os.Signal)
+		go func() {
+			s := <-ch
+			if err := os.Remove(*laddr); nil != err {
+				log.Fatalf(
+					"Unable to remove socket after %v: %v",
+					s,
+					err,
+				)
+			}
+			log.Fatalf("Caught %v and removed socket", s)
+		}()
+		signal.Notify(ch, os.Interrupt)
 	} else {
 		pair, err := tls.LoadX509KeyPair(*cert, *key)
 		if nil != err {
