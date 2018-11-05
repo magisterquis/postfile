@@ -77,6 +77,12 @@ Options:
 	}
 	flag.Parse()
 
+	/* Get original cwd in case we have a relative socket */
+	opwd, err := os.Getwd()
+	if nil != err {
+		log.Fatalf("Unable to get working directory: %v", err)
+	}
+
 	/* Be in the output directory */
 	if err := os.MkdirAll(*dir, 0700); nil != err {
 		log.Fatalf("Unable to make directory %q: %v", *dir, err)
@@ -89,13 +95,16 @@ Options:
 	http.HandleFunc("/", handle)
 
 	/* Come up with a TLS or plaintext listener */
-	var (
-		l   net.Listener
-		err error
-	)
+	var l net.Listener
 	if *plaintext {
 		l, err = net.Listen("tcp", *laddr)
 	} else if *serveFCGI {
+		/* If the path is relative, make it relative to the original
+		working directory. */
+		if !filepath.IsAbs(*laddr) {
+			*laddr = filepath.Join(opwd, *laddr)
+		}
+
 		/* Listen on a unix socket for fcgi */
 		l, err = net.Listen("unix", *laddr)
 		if nil != err {
