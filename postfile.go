@@ -95,7 +95,7 @@ Options:
 	if *plaintext {
 		l, err = net.Listen("tcp", *laddr)
 	} else if *serveFCGI {
-		l, err := net.Listen("unix", *laddr)
+		l, err = net.Listen("unix", *laddr)
 		if nil != err {
 			log.Fatalf("Unable to listen: %v", err)
 		}
