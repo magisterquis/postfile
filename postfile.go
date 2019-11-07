@@ -5,7 +5,7 @@ package main
  * Saves the contents of post requests to files
  * By J. Stuart McMurray
  * Created 20160926
- * Last Modified 20160926
+ * Last Modified 20191106
  */
 
 import (
@@ -23,6 +23,9 @@ import (
 	"strings"
 	"sync"
 )
+
+// MAXFILENUM is the maximum number of files of the sameish name to keep
+const MAXFILENUM = 65535
 
 // LOCK locks the output directory, to avoid file clobbering
 var LOCK = &sync.Mutex{}
@@ -203,26 +206,32 @@ func handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("%v Wrote %v bytes to %q: %v", rs, n, f.Name(), err)
+	m := fmt.Sprintf("%v Wrote %v bytes to %q", rs, n, f.Name())
+	if nil != err {
+		m += fmt.Sprintf(" (%v)", err)
+	}
+	log.Printf("%v", m)
 
 	/* Return the number of bytes written */
-	fmt.Fprintf(w, "%v", n)
+	fmt.Fprintf(w, "%v\n", n)
 }
 
 /* openFile opens a file for this request */
 func openFile(r *http.Request) (*os.File, error) {
 	LOCK.Lock()
 	defer LOCK.Unlock()
-	var (
-		err  error
-		name string
-		num  int
-	)
+	var name string
 
 	/* Keep trying until we find a name */
-	for name = makeName(r, num); nil == err ||
-		!os.IsNotExist(err); name = makeName(r, num) {
-		_, err = os.Stat(name)
+	for num := 0; num < MAXFILENUM; num++ {
+		name = makeName(r, num)
+		_, err := os.Stat(name)
+		if nil != err && os.IsNotExist(err) {
+			break
+		}
+		if nil != err {
+			return nil, err
+		}
 		num++
 	}
 
